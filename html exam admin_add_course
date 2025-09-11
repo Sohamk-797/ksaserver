@@ -1,1 +1,87 @@
-
+{% extends 'exam/adminbase.html' %}
+{% load widget_tweaks %}
+{% block content %}
+<head>
+  <style>
+    .form-header {
+      font-size: 2rem;
+      font-weight: 600;
+      color: #0288d1;
+      margin: 2rem 0 1.5rem 0;
+      text-align: center;
+    }
+    .form-container {
+      background: #fff;
+      border-radius: 1rem;
+      box-shadow: 0 2px 16px #0001;
+      padding: 2rem 2.5rem;
+      max-width: 600px;
+      margin: 2rem auto;
+      border: none;
+    }
+    .form-group label {
+      font-weight: 500;
+      color: #01579b;
+    }
+    .btn-primary {
+      background: #0288d1;
+      border: none;
+      border-radius: 0.5rem;
+      font-size: 1.1rem;
+      padding: 0.6rem 2rem;
+    }
+    .btn-primary:hover {
+      background: #01579b;
+    }
+    @media (max-width: 600px) {
+      .form-container { padding: 1rem 0.5rem; }
+    }
+  </style>
+</head>
+<div class="form-header">Add Test</div>
+<div class="form-container">
+  <form method="POST" autocomplete="off">
+    {% csrf_token %}
+    <div class="form-group mb-3">
+      <label for="course_name">Test Name</label>
+      {% render_field courseForm.course_name class="form-control rounded-0" placeholder="Example: Software Engineering" %}
+    </div>
+    <div class="form-group mb-3">
+      <label for="batch">Batch (Primary)</label>
+      {% render_field courseForm.batch class="form-select" %}
+    </div>
+    <div class="form-group mb-3">
+      <label>Batches (Multiple)</label>
+      <select name="batches" class="form-select" multiple size="6">
+        {% for value,label in batch_choices %}
+          <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <small class="text-muted">Hold Ctrl (Windows) or Cmd (macOS) to select multiple batches. If none selected, primary batch will be used.</small>
+    </div>
+    <div class="form-group mb-3">
+      <label for="question_number">Total Question</label>
+      {% render_field courseForm.question_number class="form-control rounded-0" placeholder="Example: 50" %}
+    </div>
+    <div class="form-group mb-3">
+      <label for="total_marks">Total Marks</label>
+      {% render_field courseForm.total_marks class="form-control rounded-0" placeholder="Example: 100" %}
+    </div>
+    <div class="form-group mb-3">
+      <label for="marks_per_question">Marks Per Question</label>
+      {% render_field courseForm.marks_per_question class="form-control rounded-0" placeholder="Default: 1" value="1" min="1" %}
+      <small class="text-muted">Used for scoring and total marks calculation.</small>
+    </div>
+    <div class="form-group mb-3">
+      <label for="duration_minutes">Duration (minutes)</label>
+      {% render_field courseForm.duration_minutes class="form-control rounded-0" placeholder="Example: 60" %}
+    </div>
+    <div class="form-group mb-3">
+      <label for="negative_mark">Negative Mark</label>
+      {% render_field courseForm.negative_mark class="form-select" %}
+    </div>
+    <button type="submit" class="btn btn-primary">Add Test Info</button>
+  </form>
+</div>
+<br><br><br>
+{% endblock content %}
