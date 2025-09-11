@@ -1,0 +1,62 @@
+{% extends 'exam/adminbase.html' %}
+{% load static %}
+{% block content %}
+<head>
+  <style>
+    .header { font-size: 1.8rem; font-weight: 600; color: #0288d1; margin: 2rem 0 1.5rem; text-align: center; }
+    .card-box { background: #fff; border-radius: 1rem; box-shadow: 0 2px 16px #0001; padding: 1.5rem; border: none; max-width: 720px; margin: 0 auto; }
+    .form-label { font-weight: 600; }
+    .btn-xs { font-size: 0.95rem; border-radius: 0.5rem; padding: 0.4rem 1.2rem; }
+    .hint { color: #666; font-size: 0.95rem; }
+    .stat { font-weight: 600; }
+  </style>
+</head>
+
+<div class="container">
+  <div class="header">Edit Test</div>
+  <div class="card-box">
+    <div class="mb-3">
+      <div><span class="stat">Test:</span> {{ course.course_name }}</div>
+      <div><span class="stat">Questions Detected:</span> {{ course.question_number }}</div>
+      <div><span class="stat">Current Marks/Question:</span> {{ course.marks_per_question }}</div>
+      <div><span class="stat">Current Total Marks:</span> {{ course.total_marks }}</div>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-danger" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <form method="post">
+      {% csrf_token %}
+      <div class="mb-3">
+        <label for="course_name" class="form-label">Test Name</label>
+        <input type="text" class="form-control" id="course_name" name="course_name" value="{{ course.course_name }}" required>
+      </div>
+      <div class="mb-3">
+        <label for="duration_minutes" class="form-label">Duration (minutes)</label>
+        <input type="number" min="1" class="form-control" id="duration_minutes" name="duration_minutes" value="{{ course.duration_minutes }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Batches (Multiple)</label>
+        <select name="batches" class="form-select" multiple size="6">
+          {% for value,label in batch_choices %}
+            <option value="{{ value }}" {% if value in selected_batches %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint mt-1">Hold Ctrl (Windows) or Cmd (macOS) to select multiple batches. First selected will be primary.</div>
+      </div>
+      <div class="mb-3">
+        <label for="marks_per_question" class="form-label">Marks per Question</label>
+        <input type="number" min="1" class="form-control" id="marks_per_question" name="marks_per_question" value="{{ course.marks_per_question }}" required>
+        <div class="hint mt-2">Total marks will be recalculated as (questions × marks per question) when you save.</div>
+      </div>
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary btn-xs">Save Changes</button>
+        <a href="{% url 'admin-view-course' %}" class="btn btn-secondary btn-xs">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<br><br>
+{% endblock content %}
