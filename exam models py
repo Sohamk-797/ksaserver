@@ -1,5 +1,6 @@
 from django.db import models
 from student.models import Student
+from datetime import timedelta
 import os
 import re
 
@@ -145,6 +146,18 @@ class QuestionTimeLog(models.Model):
         unique_together = (('student', 'question'),)
 
     def save(self, *args, **kwargs):
+        # Accumulate time across multiple enter/exit cycles for a question
         if self.start_time is not None and self.end_time is not None:
-            self.time_spent = self.end_time - self.start_time
+            try:
+                # When updating an existing row, self.time_spent already holds accumulated duration
+                accumulated = self.time_spent or timedelta(0)
+                delta = (self.end_time - self.start_time)
+                # Only add positive deltas
+                if delta.total_seconds() > 0:
+                    self.time_spent = accumulated + delta
+                else:
+                    self.time_spent = accumulated
+            except Exception:
+                # Fallback to single delta if anything goes wrong
+                self.time_spent = (self.end_time - self.start_time)
         super().save(*args, **kwargs)
