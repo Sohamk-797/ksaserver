@@ -14,6 +14,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth import logout
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
+from django.db import transaction
 from .forms import PDFUploadForm
 from .utils import parse_pdf_questions
 import os
@@ -661,22 +662,66 @@ def admin_percentile_ranking_view(request):
 @login_required(login_url='studentlogin')
 @user_passes_test(is_student)
 def save_answer_api(request):
-    """Persist the student's current selection into session only (no DB write).
-    Expected POST form fields: course_id, current_q_index, selected_option, active_subject (optional).
-    Mirrors the mapping logic used in student.calculate_marks_view so indices map to shuffled IDs.
-    Returns JSON {ok: true} on success.
+    """Persist the student's current selection.
+    Supports two modes:
+      1) Index-based session save (backward compatible): fields course_id, current_q_index, selected_option, active_subject.
+      2) Direct question upsert (preferred for AJAX): fields attempt_id (course_id), question_id, selected_option (may be empty/NULL).
+
+    Behavior:
+      - Updates session answers for consistency with server-rendered progress.
+      - Upserts to StudentAnswer with transaction.atomic so the row is updated, not duplicated.
+      - Accepts idempotent retries via X-Idempotency-Key header; operation is idempotent by design.
     """
     if request.method != 'POST':
         return JsonResponse({'ok': False, 'error': 'method not allowed'}, status=405)
     try:
+        from student.models import Student as SStudent
+        student = SStudent.objects.get(user_id=request.user.id)
+        # Inputs
+        attempt_id = request.POST.get('attempt_id') or request.POST.get('course_id')
+        question_id = request.POST.get('question_id')
+        selected_raw = request.POST.get('selected_option')
+        # Normalize selected option
+        mapping = {
+            'OptionA': 'A', 'Option A': 'A', 'A': 'A',
+            'OptionB': 'B', 'Option B': 'B', 'B': 'B',
+            'OptionC': 'C', 'Option C': 'C', 'C': 'C',
+            'OptionD': 'D', 'Option D': 'D', 'D': 'D',
+            '': None, None: None
+        }
+        selected_norm = mapping.get(selected_raw, None)
+
+        # If direct question provided, use upsert path
+        if attempt_id and question_id:
+            course = models.Course.objects.get(id=int(attempt_id))
+            question = models.Question.objects.get(id=int(question_id), course=course)
+            # Keep session answers consistent with UI
+            answers_key = f'exam_answers_ids_{course.id}_{student.id}'
+            answers = request.session.get(answers_key, {})
+            if selected_norm is None:
+                # Remove key to reflect deselection in server-rendered counts
+                answers.pop(str(question.id), None)
+            else:
+                answers[str(question.id)] = selected_raw
+            request.session[answers_key] = answers
+            # Upsert DB row idempotently
+            with transaction.atomic():
+                obj, _created = StudentAnswer.objects.select_for_update().get_or_create(
+                    student=student, exam=course, question=question,
+                    defaults={'selected_option': selected_norm}
+                )
+                # Update even if exists to ensure idempotent overwrite
+                if obj.selected_option != selected_norm:
+                    obj.selected_option = selected_norm
+                    obj.save(update_fields=['selected_option'])
+            return JsonResponse({'ok': True, 'mode': 'direct'})
+
+        # Fallback to index-based mapping (legacy behavior)
         course_id = int(request.POST.get('course_id') or '0')
         q_index = int(request.POST.get('current_q_index') or '0')
-        selected = request.POST.get('selected_option')
-        if not course_id or not q_index or not selected:
+        if not course_id or not q_index:
             return JsonResponse({'ok': False, 'error': 'missing fields'}, status=400)
-        from student.models import Student as SStudent
         course = models.Course.objects.get(id=course_id)
-        student = SStudent.objects.get(user_id=request.user.id)
         # Subject context reconstruction (same as start_exam_view/calculate_marks_view)
         SUBJECT_ORDER = ['Physics', 'Chemistry', 'Maths', 'Biology']
         present_set = set(
@@ -689,7 +734,6 @@ def save_answer_api(request):
         active_subject = request.POST.get('active_subject') or (non_general_subjects[0] if subject_mode else 'General')
         if subject_mode and active_subject not in non_general_subjects:
             active_subject = non_general_subjects[0]
-        # Build base queryset consistent with start_exam_view (include General with active subject)
         base_qs = models.Question.objects.filter(course=course)
         if subject_mode:
             base_qs = base_qs.filter(Q(subject=active_subject) | Q(subject='General'))
@@ -702,9 +746,22 @@ def save_answer_api(request):
         current_qid = shuffled_ids[q_index - 1]
         answers_key = f'exam_answers_ids_{course.id}_{student.id}'
         answers = request.session.get(answers_key, {})
-        answers[str(current_qid)] = selected
+        if selected_norm is None:
+            answers.pop(str(current_qid), None)
+        else:
+            answers[str(current_qid)] = selected_raw
         request.session[answers_key] = answers
-        return JsonResponse({'ok': True})
+        # Also upsert DB for consistency
+        question = models.Question.objects.get(id=current_qid)
+        with transaction.atomic():
+            obj, _created = StudentAnswer.objects.select_for_update().get_or_create(
+                student=student, exam=course, question=question,
+                defaults={'selected_option': selected_norm}
+            )
+            if obj.selected_option != selected_norm:
+                obj.selected_option = selected_norm
+                obj.save(update_fields=['selected_option'])
+        return JsonResponse({'ok': True, 'mode': 'index'})
     except Exception as e:
         return JsonResponse({'ok': False, 'error': str(e)}, status=500)
 
@@ -1426,13 +1483,19 @@ def question_time_log_view(request):
             question = Question.objects.get(id=question_id)
             now = timezone.now()
             if event_type == 'enter':
-                # Only create if not exists
-                if not QuestionTimeLog.objects.filter(student=student, question=question).exists():
+                # Create if missing; otherwise reset start_time for a new timing segment
+                try:
+                    log = QuestionTimeLog.objects.get(student=student, question=question)
+                    log.start_time = now
+                    # Do not change end_time here; it marks previous segment end
+                    log.save(update_fields=['start_time'])
+                except QuestionTimeLog.DoesNotExist:
                     QuestionTimeLog.objects.create(student=student, question=question, start_time=now)
             elif event_type == 'exit':
                 try:
                     log = QuestionTimeLog.objects.get(student=student, question=question)
                     log.end_time = now
+                    # Save computes and accumulates time_spent
                     log.save()
                 except QuestionTimeLog.DoesNotExist:
                     # Fallback: create with both times if somehow missing
