@@ -566,66 +566,74 @@ def admin_percentile_ranking_view(request):
     selected_batch = request.GET.get('batch') or ''
     query = (request.GET.get('q') or '').strip()
 
-    # Fetch all results with related objects to minimize queries
-    results = models.Result.objects.select_related('student__user', 'exam')
-    # Apply batch filter if provided (and not 'all')
+    # Determine eligible courses based on selected batch.
+    # We want to show ALL tests for the batch (even with zero results),
+    # and list them newest-first (by ID desc).
     if selected_batch and selected_batch.lower() != 'all':
-        results = results.filter(student__batch=selected_batch)
-    # Apply student search filter if provided
+        all_courses = list(models.Course.objects.all())
+        eligible_courses = [c for c in all_courses if selected_batch in (c.get_batches_list() if hasattr(c, 'get_batches_list') else [getattr(c, 'batch', None)])]
+    else:
+        eligible_courses = list(models.Course.objects.all())
+
+    # Order newest-first by ID
+    eligible_courses.sort(key=lambda c: c.id, reverse=True)
+
+    # Fetch all results with related objects to minimize queries and apply filters once
+    results_qs = models.Result.objects.select_related('student__user', 'exam')
+    if selected_batch and selected_batch.lower() != 'all':
+        results_qs = results_qs.filter(student__batch=selected_batch)
     if query:
-        results = results.filter(
+        results_qs = results_qs.filter(
             Q(student__user__first_name__icontains=query)
             | Q(student__user__last_name__icontains=query)
             | Q(student__user__username__icontains=query)
         )
-    # Group results by course
-    from collections import defaultdict
-    by_course = defaultdict(list)
-    for r in results:
-        by_course[r.exam].append(r)
 
+    # Index results by course id for quick lookup
+    from collections import defaultdict, Counter
+    results_by_course_id = defaultdict(list)
+    for r in results_qs:
+        results_by_course_id[r.exam_id].append(r)
+
+    # Build rankings per eligible course (allowing empty results)
     rankings_by_course = {}
     ordered_courses = []
-    for course, res_list in by_course.items():
-        if not res_list:
-            continue
-        # Sort by marks desc
-        res_list.sort(key=lambda x: x.marks, reverse=True)
-        total = len(res_list)
-        # Precompute counts for percentile with ties handled (<= score)
-        # Build frequency map of marks
-        from collections import Counter
-        freq = Counter(r.marks for r in res_list)
-        # Build cumulative counts for <= score
-        sorted_marks = sorted(freq.keys())
-        cumulative = {}
-        running = 0
-        for m in sorted_marks:
-            running += freq[m]
-            cumulative[m] = running
-        # Assign rank (dense rank: increments when marks drop)
-        rows = []
-        last_marks = None
-        current_rank = 0
-        for r in res_list:
-            if last_marks is None or r.marks != last_marks:
-                current_rank += 1
-                last_marks = r.marks
-            percentile = round((cumulative[r.marks] / total) * 100, 2)
-            # Ensure top rank shows 100.00 explicitly
-            if current_rank == 1:
-                percentile = 100.00
-            rows.append({
-                'rank': current_rank,
-                'student_name': r.student.get_name,
-                'marks': r.marks,
-                'percentile': percentile,
-            })
+    for course in eligible_courses:
+        res_list = results_by_course_id.get(course.id, [])
+        if res_list:
+            # Sort by marks desc
+            res_list.sort(key=lambda x: x.marks, reverse=True)
+            total = len(res_list)
+            # Precompute counts for percentile with ties handled (<= score)
+            freq = Counter(r.marks for r in res_list)
+            sorted_marks = sorted(freq.keys())
+            cumulative = {}
+            running = 0
+            for m in sorted_marks:
+                running += freq[m]
+                cumulative[m] = running
+            # Assign dense ranks
+            rows = []
+            last_marks = None
+            current_rank = 0
+            for r in res_list:
+                if last_marks is None or r.marks != last_marks:
+                    current_rank += 1
+                    last_marks = r.marks
+                percentile = round((cumulative[r.marks] / total) * 100, 2)
+                if current_rank == 1:
+                    percentile = 100.00
+                rows.append({
+                    'rank': current_rank,
+                    'student_name': r.student.get_name,
+                    'marks': r.marks,
+                    'percentile': percentile,
+                })
+        else:
+            # No results yet for this course
+            rows = []
         rankings_by_course[course.id] = rows
         ordered_courses.append(course)
-
-    # Sort courses by name for stable UI
-    ordered_courses.sort(key=lambda c: c.course_name)
 
     # Build batch list for filter dropdown from Student model choices
     try:
